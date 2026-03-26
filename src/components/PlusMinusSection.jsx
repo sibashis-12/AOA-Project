@@ -7,11 +7,51 @@ import {
 } from '../algorithms/plusMinus';
 import VectorHeatmap from './VectorHeatmap';
 
+/** Parse an integer from a raw string, clamped to [min, max]; returns fallback if invalid. */
+function clampInt(raw, min, max, fallback) {
+  const v = parseInt(raw, 10);
+  return isNaN(v) ? fallback : Math.max(min, Math.min(max, v));
+}
+
 export default function PlusMinusSection() {
-  const [n, setN] = useState(6);
-  const [d, setD] = useState(2);
+  // Raw string states let users clear/retype freely without snapping to min.
+  const [nRaw, setNRaw] = useState('6');
+  const [dRaw, setDRaw] = useState('2');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // Derived numeric values used by the algorithm.
+  const n = clampInt(nRaw, 1, 30, 6);
+  const d = clampInt(dRaw, 0, n - 1, 0);
+
+  function handleNChange(e) {
+    const raw = e.target.value;
+    setNRaw(raw);
+    // Re-clamp d immediately when n decreases below d+1.
+    const newN = clampInt(raw, 1, 30, n);
+    const currentD = clampInt(dRaw, 0, 30, 0);
+    if (currentD > newN - 1) {
+      setDRaw(String(Math.max(0, newN - 1)));
+    }
+  }
+
+  function handleNBlur() {
+    // Normalise display and ensure d stays in range.
+    const newN = clampInt(nRaw, 1, 30, 6);
+    setNRaw(String(newN));
+    const currentD = clampInt(dRaw, 0, 30, 0);
+    if (currentD > newN - 1) {
+      setDRaw(String(Math.max(0, newN - 1)));
+    }
+  }
+
+  function handleDChange(e) {
+    setDRaw(e.target.value);
+  }
+
+  function handleDBlur() {
+    setDRaw(String(clampInt(dRaw, 0, n - 1, 0)));
+  }
 
   function run() {
     setBusy(true);
@@ -49,8 +89,9 @@ export default function PlusMinusSection() {
             className="input-field"
             min={1}
             max={30}
-            value={n}
-            onChange={(e) => setN(Math.max(1, Math.min(30, Number(e.target.value))))}
+            value={nRaw}
+            onChange={handleNChange}
+            onBlur={handleNBlur}
           />
         </label>
         <label className="input-label">
@@ -60,8 +101,9 @@ export default function PlusMinusSection() {
             className="input-field"
             min={0}
             max={n - 1}
-            value={d}
-            onChange={(e) => setD(Math.max(0, Math.min(n - 1, Number(e.target.value))))}
+            value={dRaw}
+            onChange={handleDChange}
+            onBlur={handleDBlur}
           />
         </label>
         <button className="btn btn-primary" onClick={run} disabled={busy}>

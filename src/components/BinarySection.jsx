@@ -8,13 +8,61 @@ import VectorHeatmap from './VectorHeatmap';
 import BoundChart from './BoundChart';
 import CoverageProgress from './CoverageProgress';
 
+/** Parse an integer from a raw string, clamped to [min, max]; returns fallback if invalid. */
+function clampInt(raw, min, max, fallback) {
+  const v = parseInt(raw, 10);
+  return isNaN(v) ? fallback : Math.max(min, Math.min(max, v));
+}
+
 export default function BinarySection() {
-  const [n, setN] = useState(6);
-  const [d, setD] = useState(2);
+  // Raw string states let users clear/retype freely without snapping to min.
+  const [nRaw, setNRaw] = useState('6');
+  const [dRaw, setDRaw] = useState('2');
+  const [tableDRaw, setTableDRaw] = useState('2');
   const [result, setResult] = useState(null);
   const [tableData, setTableData] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [tableD, setTableD] = useState(2);
+
+  // Derived numeric values used by the algorithm.
+  const n = clampInt(nRaw, 1, 16, 6);
+  const d = clampInt(dRaw, 1, n, 1);
+  const tableD = clampInt(tableDRaw, 1, 8, 2);
+
+  function handleNChange(e) {
+    const raw = e.target.value;
+    setNRaw(raw);
+    // Re-clamp d immediately when n decreases below d.
+    const newN = clampInt(raw, 1, 16, n);
+    const currentD = clampInt(dRaw, 1, 16, 1);
+    if (currentD > newN) {
+      setDRaw(String(newN));
+    }
+  }
+
+  function handleNBlur() {
+    const newN = clampInt(nRaw, 1, 16, 6);
+    setNRaw(String(newN));
+    const currentD = clampInt(dRaw, 1, 16, 1);
+    if (currentD > newN) {
+      setDRaw(String(newN));
+    }
+  }
+
+  function handleDChange(e) {
+    setDRaw(e.target.value);
+  }
+
+  function handleDBlur() {
+    setDRaw(String(clampInt(dRaw, 1, n, 1)));
+  }
+
+  function handleTableDChange(e) {
+    setTableDRaw(e.target.value);
+  }
+
+  function handleTableDBlur() {
+    setTableDRaw(String(clampInt(tableDRaw, 1, 8, 2)));
+  }
 
   function run() {
     setBusy(true);
@@ -64,8 +112,9 @@ export default function BinarySection() {
             className="input-field"
             min={1}
             max={16}
-            value={n}
-            onChange={(e) => setN(Math.max(1, Math.min(16, Number(e.target.value))))}
+            value={nRaw}
+            onChange={handleNChange}
+            onBlur={handleNBlur}
           />
         </label>
         <label className="input-label">
@@ -75,8 +124,9 @@ export default function BinarySection() {
             className="input-field"
             min={1}
             max={n}
-            value={d}
-            onChange={(e) => setD(Math.max(1, Math.min(n, Number(e.target.value))))}
+            value={dRaw}
+            onChange={handleDChange}
+            onBlur={handleDBlur}
           />
         </label>
         <button className="btn btn-primary" onClick={run} disabled={busy}>
@@ -149,8 +199,9 @@ export default function BinarySection() {
               className="input-field"
               min={1}
               max={8}
-              value={tableD}
-              onChange={(e) => setTableD(Math.max(1, Math.min(8, Number(e.target.value))))}
+              value={tableDRaw}
+              onChange={handleTableDChange}
+              onBlur={handleTableDBlur}
             />
           </label>
           <button className="btn btn-secondary" onClick={runTable} disabled={busy}>
