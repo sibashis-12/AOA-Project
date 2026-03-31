@@ -6,6 +6,7 @@ import {
   exhaustiveVerify,
 } from '../algorithms/plusMinus';
 import VectorHeatmap from './VectorHeatmap';
+import CoverageProgress from './CoverageProgress';
 
 /** Parse an integer from a raw string, clamped to [min, max]; returns fallback if invalid. */
 function clampInt(raw, min, max, fallback) {
@@ -56,11 +57,11 @@ export default function PlusMinusSection() {
   function run() {
     setBusy(true);
     setTimeout(() => {
-      const family = buildPlusMinusBalancingSet(n, d);
+      const result = buildPlusMinusBalancingSet(n, d);
       const k = theoreticalBound(n, d);
-      const verify = verifyPlusMinusBalancingSet(family, n, d, 2000);
-      const exhaustive = exhaustiveVerify(family, n, d);
-      setResult({ family, k, verify, exhaustive, n, d });
+      const verify = verifyPlusMinusBalancingSet(result.family, n, d, 2000);
+      const exhaustive = exhaustiveVerify(result.family, n, d);
+      setResult({ family: result.family, steps: result.steps, k, verify, exhaustive, n, d, approximate: result.approximate });
       setBusy(false);
     }, 0);
   }
@@ -157,10 +158,23 @@ export default function PlusMinusSection() {
 
           {/* Construction description */}
           <div className="algo-box">
-            <strong>Construction:</strong> Partition {result.n} coordinates into{' '}
-            {result.k} blocks of size ≈ {result.d + 1}. For each block G<sub>i</sub>,
-            vector v<sub>i</sub> is +1 on G<sub>i</sub> and −1 elsewhere.
+            <strong>Construction:</strong>{' '}
+            {result.approximate 
+              ? `Partition ${result.n} coordinates into ${result.k} blocks of size ≈ ${result.d + 1}. For each block G_i, vector v_i is +1 on G_i and −1 elsewhere.`
+              : `Greedy set-cover algorithm selected ${result.family.length} vectors to cover all 2^${result.n} test vectors.`
+            }
           </div>
+
+          {result.approximate && (
+            <div className="note-box">
+              ⚠ n &gt; 14 — using partition construction (approximate).
+            </div>
+          )}
+
+          {/* Step-by-step greedy progress */}
+          {result.steps && result.steps[0]?.newlyCovered !== null && (
+            <CoverageProgress steps={result.steps} totalVectors={1 << Math.min(result.n, 14)} />
+          )}
 
           {/* Heatmap */}
           <VectorHeatmap

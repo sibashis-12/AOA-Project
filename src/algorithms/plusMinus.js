@@ -17,7 +17,7 @@
  * fallback for n > 14.
  */
 
-/** Fast 32-bit popcount (Hamming weight) */
+/** Fast 32-bit popcount (Hamming weight) using SWAR algorithm */
 function popcount32(x) {
   x = x >>> 0;
   x -= (x >>> 1) & 0x55555555;
@@ -28,12 +28,38 @@ function popcount32(x) {
 
 /** Convert bitmask to ±1 array (bit i set → +1, otherwise → −1) */
 function maskToPM(mask, n) {
-  return Array.from({ length: n }, (_, i) => ((mask >> i) & 1 ? 1 : -1));
+  const arr = new Int8Array(n);
+  for (let i = 0; i < n; i++) {
+    arr[i] = (mask >> i) & 1 ? 1 : -1;
+  }
+  return Array.from(arr);
 }
 
 /** Theoretical bound K(n, d) = ⌈n / (d + 1)⌉ */
 export function theoreticalBound(n, d) {
   return Math.ceil(n / (d + 1));
+}
+
+/**
+ * Precompute coverage sets for all candidate vectors.
+ * Returns a Map: candidateMask -> Set of wMasks it covers.
+ */
+function precomputeCoverageSets(n, d) {
+  const numW = 1 << n;
+  const coverageSets = new Map();
+  
+  for (let cMask = 0; cMask < numW; cMask++) {
+    const coveredSet = [];
+    for (let wMask = 0; wMask < numW; wMask++) {
+      const dp = n - 2 * popcount32(cMask ^ wMask);
+      if (Math.abs(dp) <= d) {
+        coveredSet.push(wMask);
+      }
+    }
+    coverageSets.set(cMask, coveredSet);
+  }
+  
+  return coverageSets;
 }
 
 /**
@@ -51,24 +77,33 @@ export function buildPlusMinusBalancingSet(n, d) {
     return buildPartitionConstruction(n, d, bound);
   }
 
-  // ----- Exact greedy for n ≤ 14 -----
+  // ----- Optimized exact greedy for n ≤ 14 -----
   const numW = 1 << n;
-  const covered = new Uint8Array(numW);
-  let uncoveredCount = numW;
+  
+  // Use a Set for O(1) removal of covered vectors
+  const uncovered = new Set();
+  for (let i = 0; i < numW; i++) uncovered.add(i);
+  
   const family = [];
   const steps = [];
 
-  while (uncoveredCount > 0) {
+  // Precompute which test vectors each candidate covers
+  const coverageSets = precomputeCoverageSets(n, d);
+
+  while (uncovered.size > 0) {
     let bestMask = 0;
     let bestCoverage = -1;
 
+    // Find candidate that covers most uncovered vectors
     for (let cMask = 0; cMask < numW; cMask++) {
+      const coverSet = coverageSets.get(cMask);
       let coverage = 0;
-      for (let wMask = 0; wMask < numW; wMask++) {
-        if (covered[wMask]) continue;
-        const dp = n - 2 * popcount32(cMask ^ wMask);
-        if (Math.abs(dp) <= d) coverage++;
+      
+      // Count how many uncovered vectors this candidate covers
+      for (const wMask of coverSet) {
+        if (uncovered.has(wMask)) coverage++;
       }
+      
       if (coverage > bestCoverage) {
         bestCoverage = coverage;
         bestMask = cMask;
@@ -78,18 +113,21 @@ export function buildPlusMinusBalancingSet(n, d) {
     const bestVec = maskToPM(bestMask, n);
     family.push(bestVec);
 
+    // Remove newly covered vectors
+    const coverSet = coverageSets.get(bestMask);
     let newlyCovered = 0;
-    for (let wMask = 0; wMask < numW; wMask++) {
-      if (covered[wMask]) continue;
-      const dp = n - 2 * popcount32(bestMask ^ wMask);
-      if (Math.abs(dp) <= d) {
-        covered[wMask] = 1;
-        uncoveredCount--;
+    for (const wMask of coverSet) {
+      if (uncovered.delete(wMask)) {
         newlyCovered++;
       }
     }
 
-    steps.push({ step: family.length, vectorAdded: bestVec, newlyCovered, remaining: uncoveredCount });
+    steps.push({ 
+      step: family.length, 
+      vectorAdded: bestVec, 
+      newlyCovered, 
+      remaining: uncovered.size 
+    });
   }
 
   return { family, steps, bound, uncoveredCount: 0, approximate: false };
@@ -127,8 +165,13 @@ function buildPartitionConstruction(n, d, bound) {
  * Uses fast bitmask inner-product for n ≤ 30.
  */
 export function verifyPlusMinusBalancingSet(family, n, d, numTests = 2000) {
+  // Handle both array of arrays and result object
+  const vectors = Array.isArray(family) && Array.isArray(family[0]) 
+    ? family 
+    : family.family || family;
+    
   // Encode family as bitmasks
-  const fMasks = family.map((v) =>
+  const fMasks = vectors.map((v) =>
     v.reduce((acc, vi, i) => acc | ((vi === 1 ? 1 : 0) << i), 0)
   );
 
@@ -138,14 +181,14 @@ export function verifyPlusMinusBalancingSet(family, n, d, numTests = 2000) {
 
   for (let t = 0; t < numTests; t++) {
     // Random ±1 vector as bitmask
-    let wMask = 0;
-    for (let i = 0; i < n; i++) wMask |= (Math.random() < 0.5 ? 1 : 0) << i;
+    let wMask = (Math.random() * (1 << Math.min(n, 30))) >>> 0;
 
     // Best |v·w| across family
     let bestDot = Infinity;
     for (const vMask of fMasks) {
       const dp = Math.abs(n - 2 * popcount32(vMask ^ wMask));
       if (dp < bestDot) bestDot = dp;
+      if (bestDot === 0) break; // Early exit - can't do better than 0
     }
 
     if (bestDot <= d) coveredCount++;
@@ -169,7 +212,12 @@ export function verifyPlusMinusBalancingSet(family, n, d, numTests = 2000) {
 export function exhaustiveVerify(family, n, d) {
   if (n > 14) return null;
 
-  const fMasks = family.map((v) =>
+  // Handle both array of arrays and result object
+  const vectors = Array.isArray(family) && Array.isArray(family[0]) 
+    ? family 
+    : family.family || family;
+
+  const fMasks = vectors.map((v) =>
     v.reduce((acc, vi, i) => acc | ((vi === 1 ? 1 : 0) << i), 0)
   );
 
@@ -182,6 +230,7 @@ export function exhaustiveVerify(family, n, d) {
     for (const vMask of fMasks) {
       const dp = Math.abs(n - 2 * popcount32(vMask ^ wMask));
       if (dp < bestDot) bestDot = dp;
+      if (bestDot === 0) break; // Early exit
     }
     if (bestDot > d) uncoveredCount++;
     if (bestDot > maxBestDot) maxBestDot = bestDot;

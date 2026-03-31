@@ -93,3 +93,5 @@ npm run build    # production build → dist/
 - **React 19** + **Vite** — UI framework and build tool
 - **Recharts** — bar chart (bound comparison) and area chart (coverage progress)
 - Pure JavaScript algorithms with typed arrays for performance
+
+---

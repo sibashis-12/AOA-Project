@@ -19,7 +19,7 @@
  * Exact for n ≤ 12 (full enumeration), approximate for n > 12 (random sampling).
  */
 
-/** Fast 32-bit popcount */
+/** Fast 32-bit popcount using SWAR algorithm */
 function popcount32(x) {
   x = x >>> 0;
   x -= (x >>> 1) & 0x55555555;
@@ -30,10 +30,14 @@ function popcount32(x) {
 
 /** Convert ±1 bitmask to ±1 array */
 function maskToPM(mask, n) {
-  return Array.from({ length: n }, (_, i) => ((mask >> i) & 1 ? 1 : -1));
+  const arr = new Int8Array(n);
+  for (let i = 0; i < n; i++) {
+    arr[i] = (mask >> i) & 1 ? 1 : -1;
+  }
+  return Array.from(arr);
 }
 
-/** Dot product: v (±1 mask) · w (binary mask) */
+/** Dot product: v (±1 mask) · w (binary mask) - optimized inline */
 function dotPMBin(vMask, wMask) {
   return 2 * popcount32(vMask & wMask) - popcount32(wMask);
 }
@@ -48,6 +52,29 @@ export function dotPM01(v, w) {
   let s = 0;
   for (let i = 0; i < v.length; i++) s += v[i] * w[i];
   return s;
+}
+
+/**
+ * Precompute coverage sets for the 0-1 variant.
+ * For each candidate ±1 vector (as mask), store which test vectors it covers.
+ */
+function precomputeBinaryCoverageSets(n, d, testMasks) {
+  const numW = testMasks.length;
+  const numCandidates = 1 << n;
+  const coverageSets = new Map();
+  
+  for (let cMask = 0; cMask < numCandidates; cMask++) {
+    const coveredIndices = [];
+    for (let wi = 0; wi < numW; wi++) {
+      const dp = dotPMBin(cMask, testMasks[wi]);
+      if (Math.abs(dp) <= d) {
+        coveredIndices.push(wi);
+      }
+    }
+    coverageSets.set(cMask, coveredIndices);
+  }
+  
+  return coverageSets;
 }
 
 /**
@@ -73,70 +100,93 @@ export function buildBinaryBalancingSet(n, d, maxSteps) {
     testMasks = new Uint32Array(numW);
     let t = 0;
     while (t < numW) {
-      let m = 0;
-      for (let i = 0; i < n; i++) m |= (Math.random() < 0.5 ? 1 : 0) << i;
+      const m = (Math.random() * (1 << n)) >>> 0;
       if (seen.has(m)) continue;
       seen.add(m);
       testMasks[t++] = m;
     }
   }
 
-  const covered = new Uint8Array(numW);
-  let uncoveredCount = numW;
+  // Use Set for O(1) operations on uncovered indices
+  const uncovered = new Set();
+  for (let i = 0; i < numW; i++) uncovered.add(i);
+  
   const family = [];
   const steps = [];
+
+  // For exact mode, precompute coverage sets once
+  const coverageSets = exact ? precomputeBinaryCoverageSets(n, d, testMasks) : null;
 
   // Build candidate ±1 vectors
   const numCandidates = exact ? 1 << n : Math.min(1 << n, 512);
 
-  while (uncoveredCount > 0 && family.length < cap) {
-    let candidateMasks;
-    if (exact) {
-      candidateMasks = { length: numCandidates, get: (i) => i };
-    } else {
-      const arr = new Uint32Array(numCandidates);
-      for (let i = 0; i < numCandidates; i++) {
-        let m = 0;
-        for (let b = 0; b < n; b++) m |= (Math.random() < 0.5 ? 1 : 0) << b;
-        arr[i] = m;
-      }
-      candidateMasks = { length: numCandidates, get: (i) => arr[i] };
-    }
-
+  while (uncovered.size > 0 && family.length < cap) {
     let bestCMask = 0;
     let bestCoverage = -1;
 
-    for (let ci = 0; ci < candidateMasks.length; ci++) {
-      const cMask = candidateMasks.get(ci);
-      let coverage = 0;
-      for (let wi = 0; wi < numW; wi++) {
-        if (covered[wi]) continue;
-        const dp = dotPMBin(cMask, testMasks[wi]);
-        if (Math.abs(dp) <= d) coverage++;
+    if (exact && coverageSets) {
+      // Use precomputed coverage sets
+      for (let cMask = 0; cMask < numCandidates; cMask++) {
+        const coverSet = coverageSets.get(cMask);
+        let coverage = 0;
+        for (const wi of coverSet) {
+          if (uncovered.has(wi)) coverage++;
+        }
+        if (coverage > bestCoverage) {
+          bestCoverage = coverage;
+          bestCMask = cMask;
+        }
       }
-      if (coverage > bestCoverage) {
-        bestCoverage = coverage;
-        bestCMask = cMask;
+    } else {
+      // Random sampling mode - generate fresh candidates each iteration
+      const candidateMasks = new Uint32Array(numCandidates);
+      for (let i = 0; i < numCandidates; i++) {
+        candidateMasks[i] = (Math.random() * (1 << n)) >>> 0;
+      }
+
+      for (let ci = 0; ci < numCandidates; ci++) {
+        const cMask = candidateMasks[ci];
+        let coverage = 0;
+        for (const wi of uncovered) {
+          const dp = dotPMBin(cMask, testMasks[wi]);
+          if (Math.abs(dp) <= d) coverage++;
+        }
+        if (coverage > bestCoverage) {
+          bestCoverage = coverage;
+          bestCMask = cMask;
+        }
       }
     }
 
     const bestVec = maskToPM(bestCMask, n);
     family.push(bestVec);
 
+    // Remove newly covered vectors
     let newlyCovered = 0;
-    for (let wi = 0; wi < numW; wi++) {
-      if (covered[wi]) continue;
-      if (Math.abs(dotPMBin(bestCMask, testMasks[wi])) <= d) {
-        covered[wi] = 1;
-        uncoveredCount--;
+    if (exact && coverageSets) {
+      const coverSet = coverageSets.get(bestCMask);
+      for (const wi of coverSet) {
+        if (uncovered.delete(wi)) {
+          newlyCovered++;
+        }
+      }
+    } else {
+      const toRemove = [];
+      for (const wi of uncovered) {
+        if (Math.abs(dotPMBin(bestCMask, testMasks[wi])) <= d) {
+          toRemove.push(wi);
+        }
+      }
+      for (const wi of toRemove) {
+        uncovered.delete(wi);
         newlyCovered++;
       }
     }
 
-    steps.push({ step: family.length, vectorAdded: bestVec, newlyCovered, remaining: uncoveredCount });
+    steps.push({ step: family.length, vectorAdded: bestVec, newlyCovered, remaining: uncovered.size });
   }
 
-  return { family, steps, bound, uncoveredCount, approximate: !exact };
+  return { family, steps, bound, uncoveredCount: uncovered.size, approximate: !exact };
 }
 
 /**
@@ -153,18 +203,13 @@ export function verifyBinaryBalancingSet(family, n, d, numSamples = 2000) {
   let maxBestDot = 0;
 
   for (let t = 0; t < total; t++) {
-    let wMask;
-    if (exhaustive) {
-      wMask = t;
-    } else {
-      wMask = 0;
-      for (let i = 0; i < n; i++) wMask |= (Math.random() < 0.5 ? 1 : 0) << i;
-    }
+    const wMask = exhaustive ? t : ((Math.random() * (1 << n)) >>> 0);
 
     let best = Infinity;
     for (const vMask of fMasks) {
       const dp = Math.abs(dotPMBin(vMask, wMask));
       if (dp < best) best = dp;
+      if (best === 0) break; // Early exit - can't do better
     }
 
     if (best <= d) coveredCount++;
